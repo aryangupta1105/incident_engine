@@ -15,17 +15,21 @@ let twimlGenerator = null;
 let authTokenForValidation = null;
 
 /**
- * POST /twilio/voice/reminder
+ * POST/GET /twilio/voice/reminder
  * 
+ * Webhook endpoint for Twilio voice calls.
  * Accepts signed context token and returns TwiML for Twilio to execute.
  * Validates HMAC signature to prevent tampering.
+ * 
+ * Supports both POST (Twilio) and GET (debugging/testing)
  * 
  * Query params:
  *   - context: Base64-encoded JSON with meeting details
  *   - sig: HMAC-SHA256 signature of context token
  */
-router.post('/voice/reminder', (req, res) => {
+const handleVoiceReminder = (req, res) => {
   try {
+    console.log(`[TWIML] Incoming ${req.method} request from ${req.ip}`);
     const { context, sig } = req.query;
 
     // Validate inputs
@@ -83,16 +87,19 @@ router.post('/voice/reminder', (req, res) => {
 
     const twiml = twimlGenerator(contextData);
     
-    console.log(`[TWIML] Serving reminder for event=${contextData.eventId}: "${contextData.meetingTitle}" (${contextData.minutesRemaining}min)`);
+    console.log(`[TWIML] ${req.method === 'GET' ? 'DEBUG' : 'FROM_TWILIO'} Serving reminder for event=${contextData.eventId}: "${contextData.meetingTitle}" (${contextData.minutesRemaining}min)`);
 
-    // Return TwiML with correct headers
+    // Return TwiML with correct headers (NEVER JSON)
     res.type('application/xml').send(twiml);
-
   } catch (err) {
     console.error('[TWIML] Unexpected error: ' + err.message);
     res.status(500).type('application/xml').send(generateFallbackTwiML());
   }
-});
+};
+
+// Register both POST (Twilio) and GET (testing)
+router.post('/voice/reminder', handleVoiceReminder);
+router.get('/voice/reminder', handleVoiceReminder);
 
 /**
  * Constant-time string comparison to prevent timing attacks

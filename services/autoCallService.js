@@ -282,11 +282,30 @@ async function makeCallViaTwilio(to, message, context) {
       .update(contextToken)
       .digest('hex');
 
+    // ENFORCE: Twilio webhook URL MUST use public URL (never localhost)
+    // Localhost is unreachable from Twilio's servers
+    const publicBaseUrl = process.env.PUBLIC_BASE_URL;
+    if (!publicBaseUrl) {
+      throw new Error(
+        'PUBLIC_BASE_URL environment variable is REQUIRED for Twilio webhooks. ' +
+        'Cannot use localhost - Twilio cannot reach your local machine. ' +
+        'Set PUBLIC_BASE_URL to your ngrok URL or public domain (e.g., https://batlike-unneatly-maricela.ngrok-free.dev)'
+      );
+    }
+
+    // GUARD: Reject any localhost URL (double-check)
+    if (publicBaseUrl.includes('localhost') || publicBaseUrl.includes('127.0.0.1')) {
+      throw new Error(
+        `PUBLIC_BASE_URL contains localhost (${publicBaseUrl}). ` +
+        'Twilio cannot reach localhost. Use PUBLIC_BASE_URL with ngrok or public domain.'
+      );
+    }
+
     // Build webhook URL for Twilio to fetch TwiML from
-    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    const twimlUrl = `${baseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
+    const twimlUrl = `${publicBaseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
 
     console.log(`[CALL] Using webhook-based TwiML delivery for event=${eventId}`);
+    console.log(`[CALL] Webhook URL: ${twimlUrl.substring(0, 100)}...`);
     console.log(`[CALL] Reminder: "${context.meetingTitle}" at ${context.startTimeLocal} (${context.minutesRemaining}min)`);
 
     // Make the call with timeout wrapper
@@ -294,7 +313,7 @@ async function makeCallViaTwilio(to, message, context) {
       to: to,
       from: fromNumber,
       url: twimlUrl,
-      statusCallback: `${process.env.CALL_WEBHOOK_URL || 'http://localhost:3000'}/call/status`,
+      statusCallback: `${publicBaseUrl}/call/status`,
       statusCallbackEvent: ['initiated', 'answered', 'completed'],
       statusCallbackMethod: 'POST',
       timeout: 45
