@@ -13,30 +13,13 @@
  * - Graceful failure (no crashes)
  * - Production-grade logging
  * - Escalation pipeline integration
- * - Webhook execution diagnostics (detect if Twilio never calls webhook)
  * 
  * NON-NEGOTIABLE:
  * - Calls ONLY via escalation pipeline
  * - STOP on incident resolution
  * - STOP on JOINED confirmation
  * - Phone MUST be valid E.164 format
- * - Webhook execution MUST be observable (see callDiagnostics below)
  */
-
-/**
- * CRITICAL DIAGNOSTIC: Webhook Execution Tracking
- * 
- * REASON: If Twilio never calls the webhook, custom TwiML never executes.
- * This can happen silently if the phone number's Voice Webhook config in
- * Twilio Console is misconfigured (pointing to demo.twilio.com, etc).
- * 
- * This Map tracks which Call SIDs received webhook hits.
- * If a Call SID is created but NEVER receives a webhook hit within 5 seconds,
- * a CRITICAL error is logged explaining the likely cause.
- * 
- * Format: { callSid: { eventId, createdAt, webhookHit: false } }
- */
-const callDiagnostics = new Map();
 
 /**
  * PRODUCTION PHONE VALIDATION
@@ -266,50 +249,11 @@ async function makeCallViaTwilio(to, message, context) {
   try {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+    const fromNumber = process.env.TWILIO_FROM_NUMBER;
 
     // SAFETY: Credentials validation
-    if (!accountSid || !authToken || !twilioPhoneNumber) {
-      throw new Error('Twilio credentials not configured (SID, Token, TWILIO_PHONE_NUMBER)');
-    }
-
-    /**
-     * ═══════════════════════════════════════════════════════════════════════
-     * CRITICAL: TWILIO PHONE NUMBER ENFORCEMENT
-     * ═══════════════════════════════════════════════════════════════════════
-     * 
-     * WHY THIS MATTERS:
-     * 
-     * Twilio ONLY applies a phone number's Voice Webhook if the EXACT phone
-     * number is used as the `from` parameter in calls.create().
-     * 
-     * This is not a bug — it's Twilio's design. Here's why:
-     * 
-     * 1. A Twilio phone number is a resource with settings (Voice Webhook URL,
-     *    SMS Webhook, Studio Flow, etc). Only THAT number can use those settings.
-     * 
-     * 2. Twilio trial accounts restrict calls to verified numbers ONLY.
-     *    If you add an unverified personal number as `from`, Twilio ignores it.
-     * 
-     * 3. Verified personal numbers DO NOT have associated Voice Webhooks.
-     *    If you use one as `from`, Twilio plays its trial disclaimer and hangs up.
-     *    Custom TwiML is never fetched, no matter what `url` parameter says.
-     * 
-     * SYMPTOM: "Calls connect, disclaimer plays, custom message never plays"
-     *          This ONLY happens when `from` ≠ the Twilio phone number.
-     * 
-     * ENFORCED HERE: `from` MUST always be process.env.TWILIO_PHONE_NUMBER.
-     * No fallback. No exceptions. This is non-negotiable.
-     * 
-     * ═══════════════════════════════════════════════════════════════════════
-     */
-
-    // ENFORCE: Caller ID MUST be the purchased Twilio phone number
-    if (twilioPhoneNumber !== process.env.TWILIO_PHONE_NUMBER) {
-      throw new Error(
-        `[TWILIO][FATAL] TWILIO_PHONE_NUMBER environment variable is missing or invalid. ` +
-        `Cannot proceed with voice call.`
-      );
+    if (!accountSid || !authToken || !fromNumber) {
+      throw new Error('Twilio credentials not configured (SID, Token, FromNumber)');
     }
 
     // Initialize Twilio client
@@ -338,38 +282,20 @@ async function makeCallViaTwilio(to, message, context) {
       .update(contextToken)
       .digest('hex');
 
-    // ENFORCE: Twilio webhook URL MUST use public URL (never localhost)
-    // Localhost is unreachable from Twilio's servers
-    const publicBaseUrl = process.env.PUBLIC_BASE_URL;
-    if (!publicBaseUrl) {
-      throw new Error(
-        'PUBLIC_BASE_URL environment variable is REQUIRED for Twilio webhooks. ' +
-        'Cannot use localhost - Twilio cannot reach your local machine. ' +
-        'Set PUBLIC_BASE_URL to your ngrok URL or public domain (e.g., https://batlike-unneatly-maricela.ngrok-free.dev)'
-      );
-    }
-
-    // GUARD: Reject any localhost URL (double-check)
-    if (publicBaseUrl.includes('localhost') || publicBaseUrl.includes('127.0.0.1')) {
-      throw new Error(
-        `PUBLIC_BASE_URL contains localhost (${publicBaseUrl}). ` +
-        'Twilio cannot reach localhost. Use PUBLIC_BASE_URL with ngrok or public domain.'
-      );
-    }
-
     // Build webhook URL for Twilio to fetch TwiML from
-    const twimlUrl = `${publicBaseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
+    // IMPORTANT: Must be publicly accessible URL (not localhost)
+    const baseUrl = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || 'http://localhost:3000';
+    const twimlUrl = `${baseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
 
     console.log(`[CALL] Using webhook-based TwiML delivery for event=${eventId}`);
-    console.log(`[CALL] Webhook URL: ${twimlUrl.substring(0, 100)}...`);
     console.log(`[CALL] Reminder: "${context.meetingTitle}" at ${context.startTimeLocal} (${context.minutesRemaining}min)`);
 
     // Make the call with timeout wrapper
     const callPromise = client.calls.create({
       to: to,
-      from: twilioPhoneNumber,
+      from: fromNumber,
       url: twimlUrl,
-      statusCallback: `${publicBaseUrl}/call/status`,
+      statusCallback: `${process.env.CALL_WEBHOOK_URL || 'http://localhost:3000'}/call/status`,
       statusCallbackEvent: ['initiated', 'answered', 'completed'],
       statusCallbackMethod: 'POST',
       timeout: 45
@@ -389,55 +315,6 @@ async function makeCallViaTwilio(to, message, context) {
     console.log(`[CALL] Twilio call initiated successfully`);
     console.log(`[CALL] Provider response: sid=${call.sid}`);
     console.log(`[CALL] Call details: to=${maskPhoneNumber(to)}, status=${call.status}`);
-
-    // CRITICAL DIAGNOSTIC: Track this call for webhook execution verification
-    // If webhook never fetches TwiML within 5 seconds, log CRITICAL error
-    callDiagnostics.set(call.sid, {
-      eventId: eventId,
-      createdAt: Date.now(),
-      webhookHit: false,
-      meetingTitle: context.meetingTitle
-    });
-
-    // 5-second self-diagnostic: Did webhook ever get called?
-    setTimeout(() => {
-      const diagnostic = callDiagnostics.get(call.sid);
-      if (diagnostic && !diagnostic.webhookHit) {
-        console.error(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        console.error(`[TWILIO][CRITICAL] Call SID ${call.sid} created but webhook NEVER hit`);
-        console.error(`[TWILIO][CRITICAL] This means Twilio is NOT fetching the custom TwiML`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] PROBABLE CAUSE: from ≠ Twilio phone number`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] ROOT CAUSE ANALYSIS:`);
-        console.error(`[TWILIO][CRITICAL] If from parameter is not the purchased Twilio phone number,`);
-        console.error(`[TWILIO][CRITICAL] Twilio will IGNORE the phone number's Voice Webhook config.`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] This applies to:`);
-        console.error(`[TWILIO][CRITICAL] - Verified personal numbers (no Voice Webhook associated)`);
-        console.error(`[TWILIO][CRITICAL] - Dev fallback numbers (trial account restriction)`);
-        console.error(`[TWILIO][CRITICAL] - Any number other than the purchased Twilio number`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] REQUIRED FIX:`);
-        console.error(`[TWILIO][CRITICAL] Ensure voice calls ALWAYS use from = ${twilioPhoneNumber}`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] ADDITIONALLY:`);
-        console.error(`[TWILIO][CRITICAL] 1. Open Twilio Console: https://console.twilio.com/`);
-        console.error(`[TWILIO][CRITICAL] 2. Go to: Phone Numbers → Manage → Active Numbers`);
-        console.error(`[TWILIO][CRITICAL] 3. Click the phone number: ${twilioPhoneNumber}`);
-        console.error(`[TWILIO][CRITICAL] 4. Under "Voice & Fax" → "Voice Webhook"`);
-        console.error(`[TWILIO][CRITICAL] 5. Set to: ${publicBaseUrl}/twilio/voice/reminder`);
-        console.error(`[TWILIO][CRITICAL] 6. Method: POST or GET`);
-        console.error(`[TWILIO][CRITICAL] 7. Save changes`);
-        console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] After fix, logs should show:`);
-        console.error(`[TWILIO][CRITICAL] - [TWIML] ✓ WEBHOOK CALLED BY TWILIO`);
-        console.error(`[TWILIO][CRITICAL] - [TWIML] ✓ EXECUTING REMINDER`);
-        console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-      }
-      // Clean up old diagnostics (keep for 10 minutes max)
-      callDiagnostics.delete(call.sid);
-    }, 5000);
 
     return {
       status: 'initiated',
