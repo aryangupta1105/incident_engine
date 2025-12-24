@@ -13,13 +13,30 @@
  * - Graceful failure (no crashes)
  * - Production-grade logging
  * - Escalation pipeline integration
+ * - Webhook execution diagnostics (detect if Twilio never calls webhook)
  * 
  * NON-NEGOTIABLE:
  * - Calls ONLY via escalation pipeline
  * - STOP on incident resolution
  * - STOP on JOINED confirmation
  * - Phone MUST be valid E.164 format
+ * - Webhook execution MUST be observable (see callDiagnostics below)
  */
+
+/**
+ * CRITICAL DIAGNOSTIC: Webhook Execution Tracking
+ * 
+ * REASON: If Twilio never calls the webhook, custom TwiML never executes.
+ * This can happen silently if the phone number's Voice Webhook config in
+ * Twilio Console is misconfigured (pointing to demo.twilio.com, etc).
+ * 
+ * This Map tracks which Call SIDs received webhook hits.
+ * If a Call SID is created but NEVER receives a webhook hit within 5 seconds,
+ * a CRITICAL error is logged explaining the likely cause.
+ * 
+ * Format: { callSid: { eventId, createdAt, webhookHit: false } }
+ */
+const callDiagnostics = new Map();
 
 /**
  * PRODUCTION PHONE VALIDATION
@@ -333,6 +350,45 @@ async function makeCallViaTwilio(to, message, context) {
     console.log(`[CALL] Twilio call initiated successfully`);
     console.log(`[CALL] Provider response: sid=${call.sid}`);
     console.log(`[CALL] Call details: to=${maskPhoneNumber(to)}, status=${call.status}`);
+
+    // CRITICAL DIAGNOSTIC: Track this call for webhook execution verification
+    // If webhook never fetches TwiML within 5 seconds, log CRITICAL error
+    callDiagnostics.set(call.sid, {
+      eventId: eventId,
+      createdAt: Date.now(),
+      webhookHit: false,
+      meetingTitle: context.meetingTitle
+    });
+
+    // 5-second self-diagnostic: Did webhook ever get called?
+    setTimeout(() => {
+      const diagnostic = callDiagnostics.get(call.sid);
+      if (diagnostic && !diagnostic.webhookHit) {
+        console.error(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.error(`[TWILIO][CRITICAL] Call SID ${call.sid} created but webhook NEVER hit`);
+        console.error(`[TWILIO][CRITICAL] This means Twilio is NOT fetching the custom TwiML`);
+        console.error(`[TWILIO][CRITICAL] PROBABLE CAUSE: Phone number Voice Webhook config in Twilio Console`);
+        console.error(`[TWILIO][CRITICAL] is misconfigured or missing.`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] REQUIRED FIX:`);
+        console.error(`[TWILIO][CRITICAL] 1. Open Twilio Console: https://console.twilio.com/`);
+        console.error(`[TWILIO][CRITICAL] 2. Go to: Phone Numbers → Manage → Active Numbers`);
+        console.error(`[TWILIO][CRITICAL] 3. Click the phone number: ${fromNumber}`);
+        console.error(`[TWILIO][CRITICAL] 4. Under "Voice & Fax" → "Voice Webhook"`);
+        console.error(`[TWILIO][CRITICAL] 5. Set to: ${publicBaseUrl}/twilio/voice/reminder`);
+        console.error(`[TWILIO][CRITICAL] 6. Method: POST or GET`);
+        console.error(`[TWILIO][CRITICAL] 7. Save changes`);
+        console.error(`[TWILIO][CRITICAL] 8. Call should then execute custom reminder`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] Webhook Logs to Check:`);
+        console.error(`[TWILIO][CRITICAL] - Should see: [TWIML] ✓ WEBHOOK CALLED BY TWILIO`);
+        console.error(`[TWILIO][CRITICAL] - Should see: [TWIML] ✓ EXECUTING REMINDER`);
+        console.error(`[TWILIO][CRITICAL] - If absent: Phone number config is WRONG`);
+        console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+      }
+      // Clean up old diagnostics (keep for 10 minutes max)
+      callDiagnostics.delete(call.sid);
+    }, 5000);
 
     return {
       status: 'initiated',

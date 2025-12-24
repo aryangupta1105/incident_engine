@@ -4,11 +4,39 @@
  * Handles webhook requests from Twilio for dynamic TwiML generation.
  * This endpoint serves TwiML in response to Twilio's request, ensuring
  * custom reminder messages play instead of fallback Voice Webhook content.
+ * 
+ * ⚠️ CRITICAL TWILIO CONSOLE CONFIGURATION REQUIRED:
+ * 
+ * This webhook endpoint MUST be configured in Twilio Console:
+ * 
+ * Steps:
+ * 1. Go to https://console.twilio.com/phone-numbers/active
+ * 2. Click on your phone number
+ * 3. Under "Voice & Fax":
+ *    - Set "Configure With": Webhooks
+ *    - Set "A Call Comes In" to: POST
+ *    - Set URL to: https://<PUBLIC_BASE_URL>/twilio/voice/reminder
+ * 4. Save
+ * 
+ * WHY THIS IS REQUIRED:
+ * Even when using client.calls.create({ url: twimlUrl }), Twilio's phone number
+ * Voice Webhook configuration takes PRIORITY. If the phone number is configured
+ * to use demo.twilio.com or Studio Flow, the provided URL will be IGNORED.
+ * 
+ * WITHOUT THIS CONFIG:
+ * - Call is placed
+ * - Trial disclaimer plays
+ * - Custom TwiML is NEVER fetched
+ * - Reminder message NEVER plays
+ * - Webhook logs NEVER show incoming request
  */
 
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+
+// In-memory tracking for diagnostic: Call SID → webhook hit timestamp
+const callWebhookTracker = new Map();
 
 // The TwiML generator will be injected by app.js
 let twimlGenerator = null;
@@ -26,10 +54,32 @@ let authTokenForValidation = null;
  * Query params:
  *   - context: Base64-encoded JSON with meeting details
  *   - sig: HMAC-SHA256 signature of context token
+ * 
+ * CRITICAL: This logs EVERY incoming request. If logs show NO incoming requests,
+ * then Twilio is not calling this endpoint. Check Twilio Console phone number
+ * Voice Webhook configuration.
  */
+/**
+ * Export function to mark webhook as hit (called by external modules)
+ * Used for diagnostic correlation between call creation and webhook execution
+ */
+const markWebhookHit = (callSid) => {
+  callWebhookTracker.set(callSid, { ...callWebhookTracker.get(callSid), webhookHit: true });
+};
+
 const handleVoiceReminder = (req, res) => {
+  const incomingTimestamp = new Date().toISOString();
+  
   try {
-    console.log(`[TWIML] Incoming ${req.method} request from ${req.ip}`);
+    // CRITICAL LOGGING: This proves Twilio called the webhook
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`[TWIML] ✓ WEBHOOK CALLED BY TWILIO - EXECUTION PATH CONFIRMED`);
+    console.log(`[TWIML] Timestamp: ${incomingTimestamp}`);
+    console.log(`[TWIML] Method: ${req.method}`);
+    console.log(`[TWIML] IP: ${req.ip}`);
+    console.log(`[TWIML] Headers: ${JSON.stringify(req.headers)}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+    
     const { context, sig } = req.query;
 
     // Validate inputs
@@ -79,6 +129,11 @@ const handleVoiceReminder = (req, res) => {
       return res.status(400).type('application/xml').send(generateFallbackTwiML());
     }
 
+    // Mark webhook as hit for diagnostic (if eventId provided)
+    if (contextData.eventId) {
+      callWebhookTracker.set(contextData.eventId, incomingTimestamp);
+    }
+
     // Generate TwiML using injected generator
     if (!twimlGenerator) {
       console.error('[TWIML] TwiML generator not initialized');
@@ -87,7 +142,14 @@ const handleVoiceReminder = (req, res) => {
 
     const twiml = twimlGenerator(contextData);
     
-    console.log(`[TWIML] ${req.method === 'GET' ? 'DEBUG' : 'FROM_TWILIO'} Serving reminder for event=${contextData.eventId}: "${contextData.meetingTitle}" (${contextData.minutesRemaining}min)`);
+    // CRITICAL: Execution confirmed
+    console.log(`[TWIML] ✓ EXECUTING REMINDER`);
+    console.log(`[TWIML] Event ID: ${contextData.eventId}`);
+    console.log(`[TWIML] Meeting: "${contextData.meetingTitle}"`);
+    console.log(`[TWIML] Minutes Remaining: ${contextData.minutesRemaining}`);
+    console.log(`[TWIML] Start Time: ${contextData.startTimeLocal}`);
+    console.log(`[TWIML] TwiML Generated: ${twiml.substring(0, 100)}...`);
+    console.log(`[TWIML] Response: 200 OK (application/xml)\n`);
 
     // Return TwiML with correct headers (NEVER JSON)
     res.type('application/xml').send(twiml);
@@ -143,5 +205,6 @@ function setTwiMLGenerator(generator, authToken) {
 
 module.exports = {
   router,
-  setTwiMLGenerator
+  setTwiMLGenerator,
+  markWebhookHit
 };

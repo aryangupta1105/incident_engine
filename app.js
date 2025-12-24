@@ -21,6 +21,43 @@ if (authToken) {
   setTwiMLGenerator(generateMeetingReminderTwiML, authToken);
 }
 
+// ⚠️ CRITICAL STARTUP WARNING: Twilio Configuration Required ⚠️
+// This warning is logged here to ensure it's visible at server startup
+console.log(`
+╔════════════════════════════════════════════════════════════════════════════╗
+║ ⚠️  CRITICAL: TWILIO CONFIGURATION REQUIRED                               ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║ For voice reminders to work, you MUST configure the phone number's Voice ║
+║ Webhook in the Twilio Console. This is REQUIRED even when using the       ║
+║ calls.create({ url }) API parameter.                                       ║
+║                                                                             ║
+║ **Why?** Twilio's phone number Voice Webhook config has PRIORITY over     ║
+║ the url parameter. If the phone number is misconfigured (pointing to       ║
+║ demo.twilio.com, a Studio Flow, or disabled), Twilio will NOT fetch       ║
+║ our TwiML, and custom reminders will never execute.                       ║
+║                                                                             ║
+║ **Required Steps:**                                                        ║
+║ 1. Open Twilio Console: https://console.twilio.com/                        ║
+║ 2. Go to: Phone Numbers → Manage → Active Numbers                          ║
+║ 3. Click the phone number that makes reminder calls                        ║
+║ 4. Under "Voice & Fax" section, find "Voice Webhook"                       ║
+║ 5. Set it to: ${process.env.PUBLIC_BASE_URL || 'https://your-domain.com'}/twilio/reminder ║
+║ 6. Method: POST or GET (both supported)                                    ║
+║ 7. Remove any Studio Flow assignment or demo webhook                       ║
+║ 8. Save                                                                     ║
+║                                                                             ║
+║ **Verification:**                                                          ║
+║ After configuration, check server logs for:                               ║
+║   [TWIML] ✓ WEBHOOK CALLED BY TWILIO - EXECUTION PATH CONFIRMED            ║
+║                                                                             ║
+║ If this message never appears in logs when a call is placed, the          ║
+║ phone number's Voice Webhook is still misconfigured.                      ║
+║                                                                             ║
+║ Contact: Twilio Support → Phone Number → Voice Settings → Webhooks        ║
+╚════════════════════════════════════════════════════════════════════════════╝
+`);
+
+
 // Request logging middleware (production-safe)
 app.use((req, res, next) => {
   const start = Date.now();
