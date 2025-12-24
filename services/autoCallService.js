@@ -283,12 +283,46 @@ async function makeCallViaTwilio(to, message, context) {
       .digest('hex');
 
     // Build webhook URL for Twilio to fetch TwiML from
-    // IMPORTANT: Must be publicly accessible URL (not localhost)
-    const baseUrl = process.env.PUBLIC_BASE_URL || process.env.BASE_URL || 'http://localhost:3000';
+    // CRITICAL: Must be publicly accessible URL (not localhost)
+    let baseUrl = process.env.BASE_URL;
+    
+    if (!baseUrl) {
+      const isLocalhost = process.env.NODE_ENV !== 'production';
+      const errorMsg = `BASE_URL not set. Twilio requires a publicly accessible URL.
+        
+Setup:
+  1. If using ngrok locally: BASE_URL=https://your-ngrok-url.ngrok-free.dev
+  2. If production: BASE_URL=https://your-domain.com
+  3. Add to .env file and restart server
+
+Example .env entry:
+  BASE_URL=https://your-ngrok-url.ngrok-free.dev`;
+      
+      console.error(`[CALL] CRITICAL ERROR: ${errorMsg}`);
+      throw new Error('BASE_URL must be set to a publicly accessible URL (not localhost)');
+    }
+
+    // Validate that BASE_URL is not localhost
+    if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
+      const errorMsg = `BASE_URL cannot be localhost. Twilio requires a publicly accessible URL.
+        
+Current BASE_URL: ${baseUrl}
+
+Fix:
+  1. Set up ngrok: ngrok http 3000
+  2. Copy ngrok URL (e.g., https://abc-123.ngrok-free.dev)
+  3. Update .env: BASE_URL=https://abc-123.ngrok-free.dev
+  4. Restart server: npm run dev`;
+      
+      console.error(`[CALL] CRITICAL ERROR: ${errorMsg}`);
+      throw new Error('BASE_URL cannot be localhost - Twilio rejects localhost URLs');
+    }
+
     const twimlUrl = `${baseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
 
     console.log(`[CALL] Using webhook-based TwiML delivery for event=${eventId}`);
     console.log(`[CALL] Reminder: "${context.meetingTitle}" at ${context.startTimeLocal} (${context.minutesRemaining}min)`);
+    console.log(`[CALL] Webhook URL: ${twimlUrl.substring(0, 100)}...`);
 
     // Make the call with timeout wrapper
     const callPromise = client.calls.create({
