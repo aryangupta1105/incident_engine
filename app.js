@@ -5,11 +5,21 @@ const messageRoutes = require('./routes/message.routes');
 const authRoutes = require('./routes/authRoutes');
 const calendarRoutes = require('./routes/calendarRoutes');
 const meetingRoutes = require('./routes/meetingRoutes');
+const { router: twilioRoutes, setTwiMLGenerator } = require('./routes/twilioRoutes');
+const { generateMeetingReminderTwiML } = require('./services/autoCallService');
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+// Add URL-encoded parser for Twilio webhook payloads
+app.use(express.urlencoded({ extended: true }));
+
+// Initialize Twilio routes with TwiML generator
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+if (authToken) {
+  setTwiMLGenerator(generateMeetingReminderTwiML, authToken);
+}
 
 // Request logging middleware (production-safe)
 app.use((req, res, next) => {
@@ -28,6 +38,7 @@ app.use('/message', messageRoutes);
 app.use('/auth', authRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/meetings', meetingRoutes);
+app.use('/twilio', twilioRoutes);  // Twilio webhook routes
 
 // 404 handler
 app.use((req, res) => {
