@@ -277,50 +277,52 @@ async function deliverAlertCall(alert) {
     // Priority: user.phone → DEV_PHONE_NUMBER → SKIP (never guess)
     // CRITICAL: No dummy numbers, always verify E.164 format
     
+    /**
+     * CRITICAL CONSTRAINT: Twilio Voice Webhooks
+     * 
+     * Twilio ONLY applies a phone number's Voice Webhook if the EXACT phone
+     * number is used as the `from` parameter in calls.create().
+     * 
+     * This means:
+     * - If from = a verified personal number → webhook is IGNORED
+     * - If from = a dev fallback → webhook is IGNORED
+     * - If from = any non-Twilio number → webhook is IGNORED
+     * 
+     * Trial accounts are especially strict: calls can only be made to verified
+     * numbers, and webhooks only work if `from` is the purchased Twilio number.
+     * 
+     * ENFORCED HERE: Voice calls use user.phone ONLY (no fallback).
+     * If user.phone is invalid, call is skipped (not silently - logged clearly).
+     */
+    
     let phone = null;
-    let phoneSource = null;
 
-    // Try 1: User profile phone (production source)
+    // MUST use user profile phone for voice calls
+    // NO fallback to DEV_PHONE_NUMBER or verified personal numbers
     if (user.phone) {
       const validation = validatePhoneNumber(user.phone);
       if (validation.valid) {
         phone = user.phone;
-        phoneSource = 'user_profile';
       } else {
-        console.warn(`[CALL] User phone invalid: ${validation.error}. Using fallback if available.`);
+        console.warn(`[CALL] User phone invalid: ${validation.error}`);
       }
     }
 
-    // Try 2: DEV_PHONE_NUMBER fallback (development only)
-    if (!phone) {
-      const devPhone = process.env.DEV_PHONE_NUMBER;
-      if (devPhone) {
-        const validation = validatePhoneNumber(devPhone);
-        if (validation.valid) {
-          phone = devPhone;
-          phoneSource = 'dev_fallback';
-        } else {
-          console.error(`[CALL] DEV_PHONE_NUMBER invalid: ${validation.error}`);
-        }
-      }
-    }
-
-    // No valid phone available - skip call gracefully
+    // HARD FAIL if no valid phone - never silently fallback
     if (!phone) {
       console.warn(
         `[CALL] SKIPPING CALL: User ${alert.user_id} has no valid phone number. ` +
-        `User profile phone missing/invalid, DEV_PHONE_NUMBER not configured. ` +
-        `Alert marked as skipped. Production: add users.phone column.`
+        `User profile phone missing/invalid. ` +
+        `Alert marked as skipped. Production: ensure users.phone is populated.`
       );
       
-      // PHASE 6: Graceful skip - throw special error that parent catches and skips
+      // Graceful skip - parent catches and skips
       const error = new Error(`User has no phone number for calling`);
-      error.skippable = true;  // Parent will catch and skip gracefully
+      error.skippable = true;
       throw error;
     }
 
-    // Log phone source for debugging
-    console.log(`[CALL] Phone resolved from ${phoneSource}: ${maskPhone(phone)}`);
+    console.log(`[CALL] Using user profile phone: ${maskPhone(phone)}`);
 
     // Load event details for call context
     const eventResult = await pool.query(

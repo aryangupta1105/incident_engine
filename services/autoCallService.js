@@ -266,11 +266,50 @@ async function makeCallViaTwilio(to, message, context) {
   try {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const fromNumber = process.env.TWILIO_FROM_NUMBER;
+    const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 
     // SAFETY: Credentials validation
-    if (!accountSid || !authToken || !fromNumber) {
-      throw new Error('Twilio credentials not configured (SID, Token, FromNumber)');
+    if (!accountSid || !authToken || !twilioPhoneNumber) {
+      throw new Error('Twilio credentials not configured (SID, Token, TWILIO_PHONE_NUMBER)');
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * CRITICAL: TWILIO PHONE NUMBER ENFORCEMENT
+     * ═══════════════════════════════════════════════════════════════════════
+     * 
+     * WHY THIS MATTERS:
+     * 
+     * Twilio ONLY applies a phone number's Voice Webhook if the EXACT phone
+     * number is used as the `from` parameter in calls.create().
+     * 
+     * This is not a bug — it's Twilio's design. Here's why:
+     * 
+     * 1. A Twilio phone number is a resource with settings (Voice Webhook URL,
+     *    SMS Webhook, Studio Flow, etc). Only THAT number can use those settings.
+     * 
+     * 2. Twilio trial accounts restrict calls to verified numbers ONLY.
+     *    If you add an unverified personal number as `from`, Twilio ignores it.
+     * 
+     * 3. Verified personal numbers DO NOT have associated Voice Webhooks.
+     *    If you use one as `from`, Twilio plays its trial disclaimer and hangs up.
+     *    Custom TwiML is never fetched, no matter what `url` parameter says.
+     * 
+     * SYMPTOM: "Calls connect, disclaimer plays, custom message never plays"
+     *          This ONLY happens when `from` ≠ the Twilio phone number.
+     * 
+     * ENFORCED HERE: `from` MUST always be process.env.TWILIO_PHONE_NUMBER.
+     * No fallback. No exceptions. This is non-negotiable.
+     * 
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+
+    // ENFORCE: Caller ID MUST be the purchased Twilio phone number
+    if (twilioPhoneNumber !== process.env.TWILIO_PHONE_NUMBER) {
+      throw new Error(
+        `[TWILIO][FATAL] TWILIO_PHONE_NUMBER environment variable is missing or invalid. ` +
+        `Cannot proceed with voice call.`
+      );
     }
 
     // Initialize Twilio client
@@ -328,7 +367,7 @@ async function makeCallViaTwilio(to, message, context) {
     // Make the call with timeout wrapper
     const callPromise = client.calls.create({
       to: to,
-      from: fromNumber,
+      from: twilioPhoneNumber,
       url: twimlUrl,
       statusCallback: `${publicBaseUrl}/call/status`,
       statusCallbackEvent: ['initiated', 'answered', 'completed'],
@@ -367,23 +406,33 @@ async function makeCallViaTwilio(to, message, context) {
         console.error(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         console.error(`[TWILIO][CRITICAL] Call SID ${call.sid} created but webhook NEVER hit`);
         console.error(`[TWILIO][CRITICAL] This means Twilio is NOT fetching the custom TwiML`);
-        console.error(`[TWILIO][CRITICAL] PROBABLE CAUSE: Phone number Voice Webhook config in Twilio Console`);
-        console.error(`[TWILIO][CRITICAL] is misconfigured or missing.`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] PROBABLE CAUSE: from ≠ Twilio phone number`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] ROOT CAUSE ANALYSIS:`);
+        console.error(`[TWILIO][CRITICAL] If from parameter is not the purchased Twilio phone number,`);
+        console.error(`[TWILIO][CRITICAL] Twilio will IGNORE the phone number's Voice Webhook config.`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] This applies to:`);
+        console.error(`[TWILIO][CRITICAL] - Verified personal numbers (no Voice Webhook associated)`);
+        console.error(`[TWILIO][CRITICAL] - Dev fallback numbers (trial account restriction)`);
+        console.error(`[TWILIO][CRITICAL] - Any number other than the purchased Twilio number`);
         console.error(`[TWILIO][CRITICAL]`);
         console.error(`[TWILIO][CRITICAL] REQUIRED FIX:`);
+        console.error(`[TWILIO][CRITICAL] Ensure voice calls ALWAYS use from = ${twilioPhoneNumber}`);
+        console.error(`[TWILIO][CRITICAL]`);
+        console.error(`[TWILIO][CRITICAL] ADDITIONALLY:`);
         console.error(`[TWILIO][CRITICAL] 1. Open Twilio Console: https://console.twilio.com/`);
         console.error(`[TWILIO][CRITICAL] 2. Go to: Phone Numbers → Manage → Active Numbers`);
-        console.error(`[TWILIO][CRITICAL] 3. Click the phone number: ${fromNumber}`);
+        console.error(`[TWILIO][CRITICAL] 3. Click the phone number: ${twilioPhoneNumber}`);
         console.error(`[TWILIO][CRITICAL] 4. Under "Voice & Fax" → "Voice Webhook"`);
         console.error(`[TWILIO][CRITICAL] 5. Set to: ${publicBaseUrl}/twilio/voice/reminder`);
         console.error(`[TWILIO][CRITICAL] 6. Method: POST or GET`);
         console.error(`[TWILIO][CRITICAL] 7. Save changes`);
-        console.error(`[TWILIO][CRITICAL] 8. Call should then execute custom reminder`);
         console.error(`[TWILIO][CRITICAL]`);
-        console.error(`[TWILIO][CRITICAL] Webhook Logs to Check:`);
-        console.error(`[TWILIO][CRITICAL] - Should see: [TWIML] ✓ WEBHOOK CALLED BY TWILIO`);
-        console.error(`[TWILIO][CRITICAL] - Should see: [TWIML] ✓ EXECUTING REMINDER`);
-        console.error(`[TWILIO][CRITICAL] - If absent: Phone number config is WRONG`);
+        console.error(`[TWILIO][CRITICAL] After fix, logs should show:`);
+        console.error(`[TWILIO][CRITICAL] - [TWIML] ✓ WEBHOOK CALLED BY TWILIO`);
+        console.error(`[TWILIO][CRITICAL] - [TWIML] ✓ EXECUTING REMINDER`);
         console.error(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
       }
       // Clean up old diagnostics (keep for 10 minutes max)
