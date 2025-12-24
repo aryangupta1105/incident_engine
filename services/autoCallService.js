@@ -263,43 +263,22 @@ async function makeCallViaTwilio(to, message, context) {
 
     const client = twilio(accountSid, authToken);
 
-    // CRITICAL FIX: Use webhook-based TwiML delivery (not inline twiml)
-    // Reason: Twilio phone numbers with Voice Webhooks configured will ALWAYS
-    // fetch TwiML from the URL, ignoring inline `twiml` parameter.
-    // This is documented Twilio behavior and required for trial/paid accounts.
-    
-    // Create signed token to pass meeting context securely
-    const crypto = require('crypto');
-    const contextToken = Buffer.from(JSON.stringify({
+    // TASK 1: Generate TwiML with human reminder message
+    const twiml = generateMeetingReminderTwiML({
       meetingTitle: context.meetingTitle || 'your meeting',
       minutesRemaining: context.minutesRemaining || 2,
-      startTimeLocal: context.startTimeLocal || 'shortly',
-      eventId: eventId,
-      timestamp: Date.now()
-    })).toString('base64');
-    
-    // Sign the token with auth token to prevent tampering
-    const signature = crypto
-      .createHmac('sha256', authToken)
-      .update(contextToken)
-      .digest('hex');
+      startTimeLocal: context.startTimeLocal || 'shortly'
+    });
 
-    // Construct the TwiML webhook URL that Twilio will call
-    const baseUrl = process.env.CALL_WEBHOOK_URL || 'http://localhost:3000';
-    const twimlUrl = `${baseUrl}/twilio/voice/reminder?context=${encodeURIComponent(contextToken)}&sig=${signature}`;
+    console.log(`[CALL] TwiML generated successfully for event=${eventId}`);
+    console.log(`[CALL] Reminder message: "${context.meetingTitle}" at ${context.startTimeLocal} (${context.minutesRemaining}min)`);
 
-    console.log(`[CALL] Using webhook-based TwiML delivery for event=${eventId}`);
-    console.log(`[CALL] Reminder context: "${context.meetingTitle}" at ${context.startTimeLocal} (${context.minutesRemaining}min)`);
-    console.log(`[CALL] Twilio will fetch TwiML from: /twilio/voice/reminder`);
-
-    // Make the call using URL-based TwiML (webhook approach)
+    // Make the call with timeout wrapper
     const callPromise = client.calls.create({
       to: to,
       from: fromNumber,
-      // CRITICAL: Use `url` parameter, NOT `twiml`
-      // Twilio will make a request to this URL to fetch the TwiML
-      url: twimlUrl,
-      statusCallback: `${baseUrl}/call/status`,
+      twiml: twiml,
+      statusCallback: `${process.env.CALL_WEBHOOK_URL || 'http://localhost:3000'}/call/status`,
       statusCallbackEvent: ['initiated', 'answered', 'completed'],
       statusCallbackMethod: 'POST',
       timeout: 45
@@ -419,7 +398,6 @@ function maskPhoneNumber(phoneNumber) {
 
 module.exports = {
   makeCall,
-  generateMeetingReminderTwiML, // Export for Twilio webhook route
   // Exported for testing only
   _internal: {
     incrementCallCount,
