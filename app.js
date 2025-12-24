@@ -41,7 +41,7 @@ console.log(`
 ║ 2. Go to: Phone Numbers → Manage → Active Numbers                          ║
 ║ 3. Click the phone number that makes reminder calls                        ║
 ║ 4. Under "Voice & Fax" section, find "Voice Webhook"                       ║
-║ 5. Set it to: ${process.env.PUBLIC_BASE_URL || 'https://your-domain.com'}/twilio/reminder ║
+║ 5. Set it to: ${process.env.PUBLIC_BASE_URL || 'https://your-domain.com'}/twilio/voice/reminder ║
 ║ 6. Method: POST or GET (both supported)                                    ║
 ║ 7. Remove any Studio Flow assignment or demo webhook                       ║
 ║ 8. Save                                                                     ║
