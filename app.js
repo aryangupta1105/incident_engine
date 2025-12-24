@@ -5,11 +5,14 @@ const messageRoutes = require('./routes/message.routes');
 const authRoutes = require('./routes/authRoutes');
 const calendarRoutes = require('./routes/calendarRoutes');
 const meetingRoutes = require('./routes/meetingRoutes');
+const { router: twilioRoutes, setTwiMLGenerator } = require('./routes/twilioRoutes');
+const { generateMeetingReminderTwiML } = require('./services/autoCallService');
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Required for Twilio webhooks
 
 // Request logging middleware (production-safe)
 app.use((req, res, next) => {
@@ -21,6 +24,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Initialize Twilio routes with TwiML generator
+setTwiMLGenerator(generateMeetingReminderTwiML);
+
 // Routes
 app.use('/health', healthRoutes);
 app.use('/incidents', incidentRoutes);
@@ -28,6 +34,7 @@ app.use('/message', messageRoutes);
 app.use('/auth', authRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/meetings', meetingRoutes);
+app.use('/twilio', twilioRoutes); // Twilio webhook routes for voice/reminder and call/status
 
 // 404 handler
 app.use((req, res) => {
